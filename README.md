@@ -1,0 +1,651 @@
+LegoGame - 多人FPS游戏完整技术实现
+基于虚幻引擎C++开发的多人联机FPS游戏，集成智能AI、EQS环境查询、网络同步、阵营对战等核心系统。
+
+Video demo link:
+https://www.bilibili.com/video/BV1msugzJEdT/?vd_source=c096d37a6e7624ca39a2afef5c3f64d2
+
+核心技术架构
+1. AI感知与行为系统
+AI感知机制：视觉感知
+// AI控制器集成视觉感知组件
+ALGAIController::ALGAIController()
+{
+    PerceptionComponent = CreateDefaultSubobject<UAIPerceptionComponent>(TEXT("AIPerceptionComp"));
+}
+
+// AI接管角色时自动启动行为树
+void ALGAIController::OnPossess(APawn* InPawn)
+{
+    if(ALGEnemyCharacter* EnemyCharacter = Cast<ALGEnemyCharacter>(InPawn))
+    {
+        RunBehaviorTree(EnemyCharacter->GetBehaviorTree());
+        // 初始化黑板数据
+        GetBlackboardComponent()->SetValueAsVector(TEXT("FindPos"), InPawn->GetActorLocation() + InPawn->GetActorForwardVector() * 1000);
+        GetBlackboardComponent()->SetValueAsVector(TEXT("OriginPos"), InPawn->GetActorLocation());
+    }
+}
+2. EQS环境查询系统
+射击位置查询权重设计
+•	视线检测：权重 x10（最高优先级，确保能看到目标）
+•	到查询者距离：权重 x3（保持合适交战距离）
+•	到目标距离：权重 x2（灵活的攻击距离）
+掩体位置查询权重设计
+•	视线检测：最高权重（看不到目标的点得分高）
+•	到查询者距离：高权重（优先选择距离AI近的点）
+•	到目标距离：低权重（距离目标远的点更佳）
+EQS高度偏移参数
+•	ItemHeightOffset：采样点向上偏移（模拟眼睛高度）
+•	Context Height Offset：目标对象向上偏移（模拟目标中心）
+3. 武器系统与重新装弹机制
+AI重新装弹逻辑
+// PawnAction系统实现AI重新装弹
+class UPawnAction_Reload : public UPawnAction
+{
+    virtual bool Start() override
+    {
+        if(ALGCharacterBase* CharacterBase = Cast<ALGCharacterBase>(BrainComp->GetAIOwner()->GetPawn()))
+        {
+            if(!CharacterBase->IsHoldWeapon()) return false;
+            
+            float WaitTime = CharacterBase->GetHoldWeapon()->ReloadWeapon();
+            if(WaitTime > 0)
+            {
+                // 设置定时器等待重新装弹完成
+                GetWorld()->GetTimerManager().SetTimer(Handle, this, &UPawnAction_Reload::ReloadEndCallBack, WaitTime);
+            }
+        }
+        return true;
+    }
+    
+    void ReloadEndCallBack()
+    {
+        CharacterBase->GetHoldWeapon()->MakeFullClip();
+        Finish(EPawnActionResult::Success);
+    }
+};
+玩家重新装弹逻辑
+// 武器状态机控制重新装弹
+enum class EWeaponState : uint8
+{
+    EWS_Normal,   // 正常状态
+    EWS_Fire,     // 射击状态
+    EWS_Reload,   // 重新装弹状态
+    EWS_Empty     // 弹药耗尽状态
+};
+
+float AWeaponActor::ReloadWeapon()
+{
+    if(CurrentState == EWeaponState::EWS_Fire)
+    {
+        StopFire(); // 射击中需要先停止射击
+    }
+    CurrentState = EWeaponState::EWS_Reload;
+    
+    if(ReloadMontage && MyMaster)
+    {
+        NetMulti_PlayReloadAnim(); // 网络同步播放动画
+        return ReloadMontage->GetPlayLength();
+    }
+    return 0;
+}
+4. 网络RPC同步机制
+服务器RPC - 权威性操作
+// 射击控制RPC
+UFUNCTION(Server, Reliable, WithValidation)
+void Server_StartFire();
+
+void AWeaponActor::StartFire()
+{
+    if(!HasAuthority())
+    {
+        Server_StartFire(); // 客户端调用服务器RPC
+        return;
+    }
+    // 服务器执行射击逻辑
+    CurrentState = EWeaponState::EWS_Fire;
+    SpawnBullet();
+}
+
+// 冲刺状态同步
+UFUNCTION(Server, Reliable, WithValidation)
+void Server_ChangeSprint(bool bOutSprint);
+
+void ALGCharacterBase::StartSprint()
+{
+    bSprint = true;
+    if(!HasAuthority())
+    {
+        Server_ChangeSprint(true);
+    }
+}
+多播RPC - 视觉效果同步
+// 重新装弹动画同步到所有客户端
+UFUNCTION(NetMulticast, Reliable)
+void NetMulti_PlayReloadAnim();
+
+void AWeaponActor::NetMulti_PlayReloadAnim_Implementation()
+{
+    MyMaster->PlayAnimMontage(ReloadMontage);
+}
+网络变量同步
+// 关键数据网络同步
+void AWeaponActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(AWeaponActor, MyMaster);
+    DOREPLIFETIME(AWeaponActor, CurrentClipVolume);
+    DOREPLIFETIME(AWeaponActor, CurrentState);
+}
+
+// 弹药同步回调
+void AWeaponActor::OnRep_CurrentClipVolume()
+{
+    if(CurrentClipVolume != 0 || CurrentClipVolume != MaxClipVolume)
+    {
+        SpawnEffect(); // 播放射击特效
+    }
+}
+5. 阵营系统设计
+三方阵营关系定义
+// 全局阵营ID常量
+const FGenericTeamId TeamID_Red(1);
+const FGenericTeamId TeamID_Blue(2);
+const FGenericTeamId TeamID_Yellow(3);
+
+// 阵营枚举
+UENUM()
+enum class ETeamColor
+{
+    ETC_Red,     // 红色阵营
+    ETC_Blue,    // 蓝色阵营
+    ETC_Yellow   // 黄色阵营（中立）
+};
+阵营关系求解器
+// 在GameMode中设置阵营规则
+void ALGGameMode::BeginPlay()
+{
+    Super::BeginPlay();
+    
+    // Lambda函数定义阵营关系
+    FGenericTeamId::SetAttitudeSolver([](FGenericTeamId A, FGenericTeamId B)
+    {
+        // 黄色阵营对所有人中立
+        if(A == TeamID_Yellow || B == TeamID_Yellow)
+        {
+            return ETeamAttitude::Neutral;
+        }
+        // 其他阵营：相同友好，不同敌对
+        return A != B ? ETeamAttitude::Hostile : ETeamAttitude::Friendly;
+    });
+}
+AI阵营判断逻辑
+// AI控制器实现阵营接口
+ETeamAttitude::Type ALGAIController::GetTeamAttitudeTowards(const AActor& Other) const
+{
+    if(const IGenericTeamAgentInterface* OtherTeamAgent = Cast<const IGenericTeamAgentInterface>(&Other))
+    {
+        if(IGenericTeamAgentInterface* MyTeamAgent = Cast<IGenericTeamAgentInterface>(GetPawn()))
+        {
+            // 使用全局阵营规则求解器
+            return FGenericTeamId::GetAttitude(MyTeamAgent->GetGenericTeamId(), OtherTeamAgent->GetGenericTeamId());
+        }
+    }
+    return ETeamAttitude::Neutral;
+}
+
+// 获取AI阵营ID
+FGenericTeamId ALGAIController::GetGenericTeamId() const
+{
+    switch(TeamColor)
+    {
+        case ETeamColor::ETC_Blue: return TeamID_Blue;
+        case ETeamColor::ETC_Yellow: return TeamID_Yellow;
+        default: return TeamID_Red;
+    }
+}
+6. 精确射击系统
+玩家精确瞄准
+void AWeaponActor::GetFirePostAndDirection(FVector& Position, FVector& Direction)
+{
+    Position = SkeletalMeshComponent->GetSocketLocation(TEXT("MuzzleSocket"));
+    
+    if(Cast<ALGPlayerCharacter>(MyMaster))
+    {
+        // 玩家使用相机中心射线检测
+        FVector WorldPos = MyMaster->GetCameraComponent()->GetComponentLocation();
+        FVector WorldDir = MyMaster->GetCameraComponent()->GetComponentRotation().Vector();
+        
+        FHitResult Hit;
+        if(GetWorld()->LineTraceSingleByChannel(Hit, WorldPos, WorldPos + WorldDir * 50000, ECC_WeaponTrace))
+        {
+            // 从枪口指向玩家瞄准点的精确方向
+            Direction = (Hit.Location - Position).GetSafeNormal();
+        }
+    }
+    else
+    {
+        // AI使用控制器朝向
+        Direction = MyMaster->GetControlRotation().Vector();
+        
+        FHitResult Hit;
+        FCollisionQueryParams Params;
+        Params.AddIgnoredActor(MyMaster);
+        
+        if(GetWorld()->LineTraceSingleByChannel(Hit, GetActorLocation(), GetActorLocation() + Direction * 50000, ECC_WeaponTrace, Params))
+        {
+            Direction = (Hit.Location - Position).GetSafeNormal();
+        }
+    }
+}
+7. 死亡与观战系统
+死亡处理与观战模式
+float ALGCharacterBase::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+{
+    CurrentHP--;
+    if(CurrentHP <= 0)
+    {
+        // 玩家死亡生成观战Pawn
+        if(Cast<APlayerController>(GetController()))
+        {
+            TSubclassOf<ASpectatorPawn> SpectatorClass = LoadClass<ASpectatorPawn>(nullptr, 
+                TEXT("Blueprint'/Game/Lego/BP/Player/BP_Spectator.BP_Spectator_C'"));
+            ASpectatorPawn* SpectatorPawn = GetWorld()->SpawnActor<ASpectatorPawn>(SpectatorClass, GetActorLocation(), GetActorRotation());
+            
+            if(SpectatorPawn)
+            {
+                GetController()->Possess(SpectatorPawn);
+            }
+        }
+        else
+        {
+            GetController()->UnPossess(); // AI死亡解除控制
+        }
+        
+        // 布娃娃物理模拟
+        const FPointDamageEvent* PointDamageEvent = static_cast<const FPointDamageEvent*>(&DamageEvent);
+        FVector ForceDir = (PointDamageEvent->HitInfo.Location - DamageCauser->GetActorLocation()).GetSafeNormal();
+        Multi_Dead(ForceDir, PointDamageEvent->HitInfo.BoneName);
+    }
+    return 0;
+}
+
+// 网络同步死亡效果
+UFUNCTION(NetMulticast, Reliable)
+void Multi_Dead(FVector Impulse, FName BoneName);
+
+void ALGCharacterBase::Multi_Dead_Implementation(FVector Impulse, FName BoneName)
+{
+    GetMesh()->SetSimulatePhysics(true);
+    GetMesh()->AddImpulse(Impulse * 2000, BoneName, true);
+    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+}
+8. 事件广播系统
+装备系统事件通知
+// 装备武器时触发事件
+bool UPackageComponent::EquipWeaponByPropsID(int32 ID)
+{
+    HoldWeapon = GetOwner()->GetWorld()->SpawnActor<AWeaponActor>(WeaponInfo->WeaponClass);
+    if(HoldWeapon)
+    {
+        HoldWeapon->SetMaster(Cast<ALGCharacterBase>(GetOwner()));
+        CurrentWeaponID = ID;
+        OnRep_HoldWeapon(); // 触发网络同步回调
+    }
+    return true;
+}
+
+// 武器装备事件广播
+void UPackageComponent::OnRep_HoldWeapon()
+{
+    if(HoldWeapon)
+    {
+        if(OnEquipWeapon.IsBound())
+        {
+            OnEquipWeapon.Broadcast(HoldWeapon); // 通知所有监听者
+        }
+        
+        if(ALGCharacterBase* CharacterBase = Cast<ALGCharacterBase>(GetOwner()))
+        {
+            CharacterBase->SetLockView(true);
+        }
+    }
+}
+技术特色总结
+1.	模块化AI架构：行为树 + EQS + PawnAction的完整AI解决方案
+2.	健壮网络同步：Server RPC权威验证 + Multicast视觉同步 + 关键变量Replication
+3.	灵活阵营系统：Lambda求解器 + 接口多态 + 可扩展设计
+4.	精确射击机制：玩家屏幕中心检测 + AI智能瞄准 + 网络延迟补偿
+5.	事件驱动架构：广播委托 + 监听器模式 + 松耦合组件通信
+项目展示了现代多人游戏开发的核心技术栈，从底层网络同步到高层AI决策的完整实现。
+
+
+
+
+
+LegoGame - Multiplayer FPS Game Technical Implementation
+
+Video demo link:
+https://www.bilibili.com/video/BV1msugzJEdT/?vd_source=c096d37a6e7624ca39a2afef5c3f64d2
+
+A multiplayer online FPS game developed with Unreal Engine C++, featuring intelligent AI, EQS environmental queries, network synchronization, and faction warfare systems.
+Core Technical Architecture
+1. AI Perception and Behavior System
+AI Perception Mechanism: Visual Perception
+cpp// AI Controller with integrated visual perception component
+ALGAIController::ALGAIController()
+{
+    PerceptionComponent = CreateDefaultSubobject<UAIPerceptionComponent>(TEXT("AIPerceptionComp"));
+}
+
+// Automatically start behavior tree when AI possesses character
+void ALGAIController::OnPossess(APawn* InPawn)
+{
+    if(ALGEnemyCharacter* EnemyCharacter = Cast<ALGEnemyCharacter>(InPawn))
+    {
+        RunBehaviorTree(EnemyCharacter->GetBehaviorTree());
+        // Initialize blackboard data
+        GetBlackboardComponent()->SetValueAsVector(TEXT("FindPos"), InPawn->GetActorLocation() + InPawn->GetActorForwardVector() * 1000);
+        GetBlackboardComponent()->SetValueAsVector(TEXT("OriginPos"), InPawn->GetActorLocation());
+    }
+}
+2. EQS Environmental Query System
+Fire Position Query Weight Design
+
+Line of Sight Test: Weight x10 (Highest priority, ensure target visibility)
+Distance to Querier: Weight x3 (Maintain optimal engagement distance)
+Distance to Target: Weight x2 (Flexible attack range)
+
+Cover Position Query Weight Design
+
+Line of Sight Test: Highest weight (Points invisible to target score higher)
+Distance to Querier: High weight (Prefer points close to AI)
+Distance to Target: Low weight (Points farther from target preferred)
+
+EQS Height Offset Parameters
+
+ItemHeightOffset: Sample point vertical offset (simulates eye level height)
+Context Height Offset: Target object vertical offset (simulates target center)
+
+3. Weapon System and Reload Mechanisms
+AI Reload Logic
+cpp// PawnAction system implementation for AI reload
+class UPawnAction_Reload : public UPawnAction
+{
+    virtual bool Start() override
+    {
+        if(ALGCharacterBase* CharacterBase = Cast<ALGCharacterBase>(BrainComp->GetAIOwner()->GetPawn()))
+        {
+            if(!CharacterBase->IsHoldWeapon()) return false;
+            
+            float WaitTime = CharacterBase->GetHoldWeapon()->ReloadWeapon();
+            if(WaitTime > 0)
+            {
+                // Set timer to wait for reload completion
+                GetWorld()->GetTimerManager().SetTimer(Handle, this, &UPawnAction_Reload::ReloadEndCallBack, WaitTime);
+            }
+        }
+        return true;
+    }
+    
+    void ReloadEndCallBack()
+    {
+        CharacterBase->GetHoldWeapon()->MakeFullClip();
+        Finish(EPawnActionResult::Success);
+    }
+};
+Player Reload Logic
+cpp// Weapon state machine controlling reload process
+enum class EWeaponState : uint8
+{
+    EWS_Normal,   // Normal state
+    EWS_Fire,     // Firing state
+    EWS_Reload,   // Reloading state
+    EWS_Empty     // Empty ammunition state
+};
+
+float AWeaponActor::ReloadWeapon()
+{
+    if(CurrentState == EWeaponState::EWS_Fire)
+    {
+        StopFire(); // Stop firing before reloading
+    }
+    CurrentState = EWeaponState::EWS_Reload;
+    
+    if(ReloadMontage && MyMaster)
+    {
+        NetMulti_PlayReloadAnim(); // Network synchronized animation
+        return ReloadMontage->GetPlayLength();
+    }
+    return 0;
+}
+4. Network RPC Synchronization
+Server RPCs - Authoritative Operations
+cpp// Fire control RPC
+UFUNCTION(Server, Reliable, WithValidation)
+void Server_StartFire();
+
+void AWeaponActor::StartFire()
+{
+    if(!HasAuthority())
+    {
+        Server_StartFire(); // Client calls server RPC
+        return;
+    }
+    // Server executes firing logic
+    CurrentState = EWeaponState::EWS_Fire;
+    SpawnBullet();
+}
+
+// Sprint state synchronization
+UFUNCTION(Server, Reliable, WithValidation)
+void Server_ChangeSprint(bool bOutSprint);
+
+void ALGCharacterBase::StartSprint()
+{
+    bSprint = true;
+    if(!HasAuthority())
+    {
+        Server_ChangeSprint(true);
+    }
+}
+Multicast RPCs - Visual Effect Synchronization
+cpp// Reload animation synchronized to all clients
+UFUNCTION(NetMulticast, Reliable)
+void NetMulti_PlayReloadAnim();
+
+void AWeaponActor::NetMulti_PlayReloadAnim_Implementation()
+{
+    MyMaster->PlayAnimMontage(ReloadMontage);
+}
+Network Variable Replication
+cpp// Critical data network synchronization
+void AWeaponActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(AWeaponActor, MyMaster);
+    DOREPLIFETIME(AWeaponActor, CurrentClipVolume);
+    DOREPLIFETIME(AWeaponActor, CurrentState);
+}
+
+// Ammunition synchronization callback
+void AWeaponActor::OnRep_CurrentClipVolume()
+{
+    if(CurrentClipVolume != 0 || CurrentClipVolume != MaxClipVolume)
+    {
+        SpawnEffect(); // Play firing effects
+    }
+}
+5. Faction System Design
+Three-Faction Relationship Definition
+cpp// Global faction ID constants
+const FGenericTeamId TeamID_Red(1);
+const FGenericTeamId TeamID_Blue(2);
+const FGenericTeamId TeamID_Yellow(3);
+
+// Faction enumeration
+UENUM()
+enum class ETeamColor
+{
+    ETC_Red,     // Red faction
+    ETC_Blue,    // Blue faction
+    ETC_Yellow   // Yellow faction (Neutral)
+};
+Faction Relationship Solver
+cpp// Set faction rules in GameMode
+void ALGGameMode::BeginPlay()
+{
+    Super::BeginPlay();
+    
+    // Lambda function defining faction relationships
+    FGenericTeamId::SetAttitudeSolver([](FGenericTeamId A, FGenericTeamId B)
+    {
+        // Yellow faction is neutral to everyone
+        if(A == TeamID_Yellow || B == TeamID_Yellow)
+        {
+            return ETeamAttitude::Neutral;
+        }
+        // Other factions: same = friendly, different = hostile
+        return A != B ? ETeamAttitude::Hostile : ETeamAttitude::Friendly;
+    });
+}
+AI Faction Determination Logic
+cpp// AI Controller implements faction interface
+ETeamAttitude::Type ALGAIController::GetTeamAttitudeTowards(const AActor& Other) const
+{
+    if(const IGenericTeamAgentInterface* OtherTeamAgent = Cast<const IGenericTeamAgentInterface>(&Other))
+    {
+        if(IGenericTeamAgentInterface* MyTeamAgent = Cast<IGenericTeamAgentInterface>(GetPawn()))
+        {
+            // Use global faction rule solver
+            return FGenericTeamId::GetAttitude(MyTeamAgent->GetGenericTeamId(), OtherTeamAgent->GetGenericTeamId());
+        }
+    }
+    return ETeamAttitude::Neutral;
+}
+
+// Get AI faction ID
+FGenericTeamId ALGAIController::GetGenericTeamId() const
+{
+    switch(TeamColor)
+    {
+        case ETeamColor::ETC_Blue: return TeamID_Blue;
+        case ETeamColor::ETC_Yellow: return TeamID_Yellow;
+        default: return TeamID_Red;
+    }
+}
+6. Precision Shooting System
+Player Precise Aiming
+cppvoid AWeaponActor::GetFirePostAndDirection(FVector& Position, FVector& Direction)
+{
+    Position = SkeletalMeshComponent->GetSocketLocation(TEXT("MuzzleSocket"));
+    
+    if(Cast<ALGPlayerCharacter>(MyMaster))
+    {
+        // Player uses camera center ray casting
+        FVector WorldPos = MyMaster->GetCameraComponent()->GetComponentLocation();
+        FVector WorldDir = MyMaster->GetCameraComponent()->GetComponentRotation().Vector();
+        
+        FHitResult Hit;
+        if(GetWorld()->LineTraceSingleByChannel(Hit, WorldPos, WorldPos + WorldDir * 50000, ECC_WeaponTrace))
+        {
+            // Precise direction from muzzle to player's aim point
+            Direction = (Hit.Location - Position).GetSafeNormal();
+        }
+    }
+    else
+    {
+        // AI uses controller orientation
+        Direction = MyMaster->GetControlRotation().Vector();
+        
+        FHitResult Hit;
+        FCollisionQueryParams Params;
+        Params.AddIgnoredActor(MyMaster);
+        
+        if(GetWorld()->LineTraceSingleByChannel(Hit, GetActorLocation(), GetActorLocation() + Direction * 50000, ECC_WeaponTrace, Params))
+        {
+            Direction = (Hit.Location - Position).GetSafeNormal();
+        }
+    }
+}
+7. Death and Spectator System
+Death Handling and Spectator Mode
+cppfloat ALGCharacterBase::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+{
+    CurrentHP--;
+    if(CurrentHP <= 0)
+    {
+        // Player death spawns spectator pawn
+        if(Cast<APlayerController>(GetController()))
+        {
+            TSubclassOf<ASpectatorPawn> SpectatorClass = LoadClass<ASpectatorPawn>(nullptr, 
+                TEXT("Blueprint'/Game/Lego/BP/Player/BP_Spectator.BP_Spectator_C'"));
+            ASpectatorPawn* SpectatorPawn = GetWorld()->SpawnActor<ASpectatorPawn>(SpectatorClass, GetActorLocation(), GetActorRotation());
+            
+            if(SpectatorPawn)
+            {
+                GetController()->Possess(SpectatorPawn);
+            }
+        }
+        else
+        {
+            GetController()->UnPossess(); // AI death releases control
+        }
+        
+        // Ragdoll physics simulation
+        const FPointDamageEvent* PointDamageEvent = static_cast<const FPointDamageEvent*>(&DamageEvent);
+        FVector ForceDir = (PointDamageEvent->HitInfo.Location - DamageCauser->GetActorLocation()).GetSafeNormal();
+        Multi_Dead(ForceDir, PointDamageEvent->HitInfo.BoneName);
+    }
+    return 0;
+}
+
+// Network synchronized death effects
+UFUNCTION(NetMulticast, Reliable)
+void Multi_Dead(FVector Impulse, FName BoneName);
+
+void ALGCharacterBase::Multi_Dead_Implementation(FVector Impulse, FName BoneName)
+{
+    GetMesh()->SetSimulatePhysics(true);
+    GetMesh()->AddImpulse(Impulse * 2000, BoneName, true);
+    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+}
+8. Event Broadcasting System
+Equipment System Event Notifications
+cpp// Trigger events when equipping weapons
+bool UPackageComponent::EquipWeaponByPropsID(int32 ID)
+{
+    HoldWeapon = GetOwner()->GetWorld()->SpawnActor<AWeaponActor>(WeaponInfo->WeaponClass);
+    if(HoldWeapon)
+    {
+        HoldWeapon->SetMaster(Cast<ALGCharacterBase>(GetOwner()));
+        CurrentWeaponID = ID;
+        OnRep_HoldWeapon(); // Trigger network sync callback
+    }
+    return true;
+}
+
+// Weapon equipment event broadcasting
+void UPackageComponent::OnRep_HoldWeapon()
+{
+    if(HoldWeapon)
+    {
+        if(OnEquipWeapon.IsBound())
+        {
+            OnEquipWeapon.Broadcast(HoldWeapon); // Notify all listeners
+        }
+        
+        if(ALGCharacterBase* CharacterBase = Cast<ALGCharacterBase>(GetOwner()))
+        {
+            CharacterBase->SetLockView(true);
+        }
+    }
+}
+Technical Highlights Summary
+
+Modular AI Architecture: Complete AI solution combining Behavior Trees + EQS + PawnAction systems
+Robust Network Synchronization: Server RPC authority validation + Multicast visual sync + Critical variable replication
+Flexible Faction System: Lambda solver + Interface polymorphism + Extensible design
+Precision Shooting Mechanics: Player screen-center detection + AI intelligent aiming + Network latency compensation
+Event-Driven Architecture: Broadcast delegates + Observer pattern + Loosely coupled component communication
+
+This project demonstrates the core technology stack of modern multiplayer game development, featuring complete implementation from low-level network synchronization to high-level AI decision making.
