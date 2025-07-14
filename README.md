@@ -322,16 +322,15 @@ void UPackageComponent::OnRep_HoldWeapon()
 
 
 
-LegoGame - Multiplayer FPS Game Technical Implementation
-
 Video demo link:
 https://www.bilibili.com/video/BV1msugzJEdT/?vd_source=c096d37a6e7624ca39a2afef5c3f64d2
 
+LegoGame - Multiplayer FPS Game Technical Implementation
 A multiplayer online FPS game developed with Unreal Engine C++, featuring intelligent AI, EQS environmental queries, network synchronization, and faction warfare systems.
 Core Technical Architecture
 1. AI Perception and Behavior System
 AI Perception Mechanism: Visual Perception
-cpp// AI Controller with integrated visual perception component
+// AI Controller with integrated visual perception component
 ALGAIController::ALGAIController()
 {
     PerceptionComponent = CreateDefaultSubobject<UAIPerceptionComponent>(TEXT("AIPerceptionComp"));
@@ -350,25 +349,19 @@ void ALGAIController::OnPossess(APawn* InPawn)
 }
 2. EQS Environmental Query System
 Fire Position Query Weight Design
-
-Line of Sight Test: Weight x10 (Highest priority, ensure target visibility)
-Distance to Querier: Weight x3 (Maintain optimal engagement distance)
-Distance to Target: Weight x2 (Flexible attack range)
-
+•	Line of Sight Test: Weight x10 (Highest priority, ensure target visibility)
+•	Distance to Querier: Weight x3 (Maintain optimal engagement distance)
+•	Distance to Target: Weight x2 (Flexible attack range)
 Cover Position Query Weight Design
-
-Line of Sight Test: Highest weight (Points invisible to target score higher)
-Distance to Querier: High weight (Prefer points close to AI)
-Distance to Target: Low weight (Points farther from target preferred)
-
+•	Line of Sight Test: Highest weight (Points invisible to target score higher)
+•	Distance to Querier: High weight (Prefer points close to AI)
+•	Distance to Target: Low weight (Points farther from target preferred)
 EQS Height Offset Parameters
-
-ItemHeightOffset: Sample point vertical offset (simulates eye level height)
-Context Height Offset: Target object vertical offset (simulates target center)
-
+•	ItemHeightOffset: Sample point vertical offset (simulates eye level height)
+•	Context Height Offset: Target object vertical offset (simulates target center)
 3. Weapon System and Reload Mechanisms
 AI Reload Logic
-cpp// PawnAction system implementation for AI reload
+// PawnAction system implementation for AI reload
 class UPawnAction_Reload : public UPawnAction
 {
     virtual bool Start() override
@@ -394,7 +387,7 @@ class UPawnAction_Reload : public UPawnAction
     }
 };
 Player Reload Logic
-cpp// Weapon state machine controlling reload process
+// Weapon state machine controlling reload process
 enum class EWeaponState : uint8
 {
     EWS_Normal,   // Normal state
@@ -420,7 +413,7 @@ float AWeaponActor::ReloadWeapon()
 }
 4. Network RPC Synchronization
 Server RPCs - Authoritative Operations
-cpp// Fire control RPC
+// Fire control RPC
 UFUNCTION(Server, Reliable, WithValidation)
 void Server_StartFire();
 
@@ -449,7 +442,7 @@ void ALGCharacterBase::StartSprint()
     }
 }
 Multicast RPCs - Visual Effect Synchronization
-cpp// Reload animation synchronized to all clients
+// Reload animation synchronized to all clients
 UFUNCTION(NetMulticast, Reliable)
 void NetMulti_PlayReloadAnim();
 
@@ -458,7 +451,7 @@ void AWeaponActor::NetMulti_PlayReloadAnim_Implementation()
     MyMaster->PlayAnimMontage(ReloadMontage);
 }
 Network Variable Replication
-cpp// Critical data network synchronization
+// Critical data network synchronization
 void AWeaponActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -477,7 +470,7 @@ void AWeaponActor::OnRep_CurrentClipVolume()
 }
 5. Faction System Design
 Three-Faction Relationship Definition
-cpp// Global faction ID constants
+// Global faction ID constants
 const FGenericTeamId TeamID_Red(1);
 const FGenericTeamId TeamID_Blue(2);
 const FGenericTeamId TeamID_Yellow(3);
@@ -491,7 +484,7 @@ enum class ETeamColor
     ETC_Yellow   // Yellow faction (Neutral)
 };
 Faction Relationship Solver
-cpp// Set faction rules in GameMode
+// Set faction rules in GameMode
 void ALGGameMode::BeginPlay()
 {
     Super::BeginPlay();
@@ -509,7 +502,7 @@ void ALGGameMode::BeginPlay()
     });
 }
 AI Faction Determination Logic
-cpp// AI Controller implements faction interface
+// AI Controller implements faction interface
 ETeamAttitude::Type ALGAIController::GetTeamAttitudeTowards(const AActor& Other) const
 {
     if(const IGenericTeamAgentInterface* OtherTeamAgent = Cast<const IGenericTeamAgentInterface>(&Other))
@@ -535,7 +528,7 @@ FGenericTeamId ALGAIController::GetGenericTeamId() const
 }
 6. Precision Shooting System
 Player Precise Aiming
-cppvoid AWeaponActor::GetFirePostAndDirection(FVector& Position, FVector& Direction)
+void AWeaponActor::GetFirePostAndDirection(FVector& Position, FVector& Direction)
 {
     Position = SkeletalMeshComponent->GetSocketLocation(TEXT("MuzzleSocket"));
     
@@ -569,7 +562,7 @@ cppvoid AWeaponActor::GetFirePostAndDirection(FVector& Position, FVector& Direct
 }
 7. Death and Spectator System
 Death Handling and Spectator Mode
-cppfloat ALGCharacterBase::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+float ALGCharacterBase::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
     CurrentHP--;
     if(CurrentHP <= 0)
@@ -611,7 +604,7 @@ void ALGCharacterBase::Multi_Dead_Implementation(FVector Impulse, FName BoneName
 }
 8. Event Broadcasting System
 Equipment System Event Notifications
-cpp// Trigger events when equipping weapons
+// Trigger events when equipping weapons
 bool UPackageComponent::EquipWeaponByPropsID(int32 ID)
 {
     HoldWeapon = GetOwner()->GetWorld()->SpawnActor<AWeaponActor>(WeaponInfo->WeaponClass);
@@ -641,11 +634,11 @@ void UPackageComponent::OnRep_HoldWeapon()
     }
 }
 Technical Highlights Summary
-
-Modular AI Architecture: Complete AI solution combining Behavior Trees + EQS + PawnAction systems
-Robust Network Synchronization: Server RPC authority validation + Multicast visual sync + Critical variable replication
-Flexible Faction System: Lambda solver + Interface polymorphism + Extensible design
-Precision Shooting Mechanics: Player screen-center detection + AI intelligent aiming + Network latency compensation
-Event-Driven Architecture: Broadcast delegates + Observer pattern + Loosely coupled component communication
-
+1.	Modular AI Architecture: Complete AI solution combining Behavior Trees + EQS + PawnAction systems
+2.	Robust Network Synchronization: Server RPC authority validation + Multicast visual sync + Critical variable replication
+3.	Flexible Faction System: Lambda solver + Interface polymorphism + Extensible design
+4.	Precision Shooting Mechanics: Player screen-center detection + AI intelligent aiming + Network latency compensation
+5.	Event-Driven Architecture: Broadcast delegates + Observer pattern + Loosely coupled component communication
 This project demonstrates the core technology stack of modern multiplayer game development, featuring complete implementation from low-level network synchronization to high-level AI decision making.
+
+
