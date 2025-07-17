@@ -1,12 +1,16 @@
-LegoGame - 多人FPS游戏完整技术实现
+# LegoGame - 多人FPS游戏完整技术实现
+
 基于虚幻引擎C++开发的多人联机FPS游戏，集成智能AI、EQS环境查询、网络同步、阵营对战等核心系统。
 
-Video demo link:
-https://www.bilibili.com/video/BV1msugzJEdT/?vd_source=c096d37a6e7624ca39a2afef5c3f64d2
+**Video Demo:** https://www.bilibili.com/video/BV1msugzJEdT/?vd_source=c096d37a6e7624ca39a2afef5c3f64d2
 
-核心技术架构
-1. AI感知与行为系统
-AI感知机制：视觉感知
+## 核心技术架构
+
+### 1. AI感知与行为系统
+
+**AI感知机制：视觉感知**
+
+```cpp
 // AI控制器集成视觉感知组件
 ALGAIController::ALGAIController()
 {
@@ -24,20 +28,59 @@ void ALGAIController::OnPossess(APawn* InPawn)
         GetBlackboardComponent()->SetValueAsVector(TEXT("OriginPos"), InPawn->GetActorLocation());
     }
 }
-2. EQS环境查询系统
-射击位置查询权重设计
-•	视线检测：权重 x10（最高优先级，确保能看到目标）
-•	到查询者距离：权重 x3（保持合适交战距离）
-•	到目标距离：权重 x2（灵活的攻击距离）
-掩体位置查询权重设计
-•	视线检测：最高权重（看不到目标的点得分高）
-•	到查询者距离：高权重（优先选择距离AI近的点）
-•	到目标距离：低权重（距离目标远的点更佳）
-EQS高度偏移参数
-•	ItemHeightOffset：采样点向上偏移（模拟眼睛高度）
-•	Context Height Offset：目标对象向上偏移（模拟目标中心）
-3. 武器系统与重新装弹机制
-AI重新装弹逻辑
+```
+
+### 2. EQS环境查询系统
+
+**EQS_HidePos (掩体位置查询)**
+
+SimpleGrid生成器：在目标周围1500x1500单位网格，200单位间距生成候选点
+
+评分机制与权重配置：
+- **Distance to EnvQueryC_Target (距离玩家)** - 权重x1
+  - Linear评分：距离玩家近=0分，距离玩家远=1分
+  - 目标：选择距离玩家远的点 (返回1分的点)
+- **Distance to Querier (距离AI自己)** - 权重x2
+  - Inverse Linear评分：距离AI远=0分，距离AI近=1分
+  - 目标：选择距离AI自己近的点 (返回1分的点)
+- **Trace to EnvQueryC_Target on Visibility (视线检测)** - 权重x1
+  - ItemHeightOffset: +80 (采样点向上偏移80单位)
+  - ContextHeightOffset: +40 (AI中心点向上偏移40单位，模拟眼部位置)
+  - 射线检测：从采样点+80高度 → 向AI+40高度
+  - 看不到AI=1分，能看到AI=0分
+  - 目标：选择玩家看不到AI的点，可作为掩体 (返回1分的点)
+
+权重分析：Distance to Querier权重最高(x2)，表明该EQS优先考虑距离AI近的点，确保AI能快速到达掩体位置。
+
+返回逻辑：系统选择加权总分最高的点，即：距离玩家远、距离AI近、且AI看不到的最优掩体位置。
+
+**EQS_FindFirePos (射击位置查询)**
+
+SimpleGrid生成器：在目标周围1500x1500单位网格，200单位间距生成候选点
+
+评分机制与权重配置：
+- **Distance to Querier (距离AI自己)** - 权重x3
+  - Inverse Linear评分：距离AI远=0分，距离AI近=1分
+  - 目标：选择距离AI自己近的点 (返回1分的点)
+- **Distance to EnvQueryC_Target (距离玩家)** - 权重x2
+  - Linear评分：距离玩家近=0分，距离玩家远=1分
+  - 目标：选择距离玩家远的点 (返回1分的点)
+- **Trace to EnvQueryC_Target on Visibility (视线检测)** - 权重x10
+  - ItemHeightOffset: +90 (采样点向上偏移90单位)
+  - ContextHeightOffset: +60 (目标中心点向上偏移60单位)
+  - 射线检测：从采样点+90高度 → 向目标+60高度
+  - 布尔匹配未勾选：能看到目标=1分，看不到目标=0分
+  - 目标：选择能看到玩家目标的点，适合开火射击 (返回1分的点)
+
+权重分析：Trace Visibility权重最高(x10)，表明该EQS最优先考虑视线通畅的射击位置，确保AI能有效攻击目标。
+
+返回逻辑：系统选择加权总分最高的点，即：距离AI近、距离玩家远、且能清晰看到目标的最优射击位置。
+
+### 3. 武器系统与重新装弹机制
+
+**AI重新装弹逻辑**
+
+```cpp
 // PawnAction系统实现AI重新装弹
 class UPawnAction_Reload : public UPawnAction
 {
@@ -63,7 +106,11 @@ class UPawnAction_Reload : public UPawnAction
         Finish(EPawnActionResult::Success);
     }
 };
-玩家重新装弹逻辑
+```
+
+**玩家重新装弹逻辑**
+
+```cpp
 // 武器状态机控制重新装弹
 enum class EWeaponState : uint8
 {
@@ -88,8 +135,13 @@ float AWeaponActor::ReloadWeapon()
     }
     return 0;
 }
-4. 网络RPC同步机制
-服务器RPC - 权威性操作
+```
+
+### 4. 网络RPC同步机制
+
+**服务器RPC - 权威性操作**
+
+```cpp
 // 射击控制RPC
 UFUNCTION(Server, Reliable, WithValidation)
 void Server_StartFire();
@@ -118,7 +170,11 @@ void ALGCharacterBase::StartSprint()
         Server_ChangeSprint(true);
     }
 }
-多播RPC - 视觉效果同步
+```
+
+**多播RPC - 视觉效果同步**
+
+```cpp
 // 重新装弹动画同步到所有客户端
 UFUNCTION(NetMulticast, Reliable)
 void NetMulti_PlayReloadAnim();
@@ -127,7 +183,11 @@ void AWeaponActor::NetMulti_PlayReloadAnim_Implementation()
 {
     MyMaster->PlayAnimMontage(ReloadMontage);
 }
-网络变量同步
+```
+
+**网络变量同步**
+
+```cpp
 // 关键数据网络同步
 void AWeaponActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
@@ -145,8 +205,13 @@ void AWeaponActor::OnRep_CurrentClipVolume()
         SpawnEffect(); // 播放射击特效
     }
 }
-5. 阵营系统设计
-三方阵营关系定义
+```
+
+### 5. 阵营系统设计
+
+**三方阵营关系定义**
+
+```cpp
 // 全局阵营ID常量
 const FGenericTeamId TeamID_Red(1);
 const FGenericTeamId TeamID_Blue(2);
@@ -160,7 +225,11 @@ enum class ETeamColor
     ETC_Blue,    // 蓝色阵营
     ETC_Yellow   // 黄色阵营（中立）
 };
-阵营关系求解器
+```
+
+**阵营关系求解器**
+
+```cpp
 // 在GameMode中设置阵营规则
 void ALGGameMode::BeginPlay()
 {
@@ -178,7 +247,11 @@ void ALGGameMode::BeginPlay()
         return A != B ? ETeamAttitude::Hostile : ETeamAttitude::Friendly;
     });
 }
-AI阵营判断逻辑
+```
+
+**AI阵营判断逻辑**
+
+```cpp
 // AI控制器实现阵营接口
 ETeamAttitude::Type ALGAIController::GetTeamAttitudeTowards(const AActor& Other) const
 {
@@ -203,8 +276,13 @@ FGenericTeamId ALGAIController::GetGenericTeamId() const
         default: return TeamID_Red;
     }
 }
-6. 精确射击系统
-玩家精确瞄准
+```
+
+### 6. 精确射击系统
+
+**玩家精确瞄准**
+
+```cpp
 void AWeaponActor::GetFirePostAndDirection(FVector& Position, FVector& Direction)
 {
     Position = SkeletalMeshComponent->GetSocketLocation(TEXT("MuzzleSocket"));
@@ -237,8 +315,13 @@ void AWeaponActor::GetFirePostAndDirection(FVector& Position, FVector& Direction
         }
     }
 }
-7. 死亡与观战系统
-死亡处理与观战模式
+```
+
+### 7. 死亡与观战系统
+
+**死亡处理与观战模式**
+
+```cpp
 float ALGCharacterBase::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
     CurrentHP--;
@@ -279,8 +362,13 @@ void ALGCharacterBase::Multi_Dead_Implementation(FVector Impulse, FName BoneName
     GetMesh()->AddImpulse(Impulse * 2000, BoneName, true);
     GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 }
-8. 事件广播系统
-装备系统事件通知
+```
+
+### 8. 事件广播系统
+
+**装备系统事件通知**
+
+```cpp
 // 装备武器时触发事件
 bool UPackageComponent::EquipWeaponByPropsID(int32 ID)
 {
@@ -310,26 +398,35 @@ void UPackageComponent::OnRep_HoldWeapon()
         }
     }
 }
-技术特色总结
-1.	模块化AI架构：行为树 + EQS + PawnAction的完整AI解决方案
-2.	健壮网络同步：Server RPC权威验证 + Multicast视觉同步 + 关键变量Replication
-3.	灵活阵营系统：Lambda求解器 + 接口多态 + 可扩展设计
-4.	精确射击机制：玩家屏幕中心检测 + AI智能瞄准 + 网络延迟补偿
-5.	事件驱动架构：广播委托 + 监听器模式 + 松耦合组件通信
+```
+
+## 技术特色总结
+
+1. **模块化AI架构**：行为树 + EQS + PawnAction的完整AI解决方案
+2. **健壮网络同步**：Server RPC权威验证 + Multicast视觉同步 + 关键变量Replication
+3. **灵活阵营系统**：Lambda求解器 + 接口多态 + 可扩展设计
+4. **精确射击机制**：玩家屏幕中心检测 + AI智能瞄准 + 网络延迟补偿
+5. **事件驱动架构**：广播委托 + 监听器模式 + 松耦合组件通信
+
 项目展示了现代多人游戏开发的核心技术栈，从底层网络同步到高层AI决策的完整实现。
 
+---
 
+## English Version
 
+# LegoGame - Multiplayer FPS Game Technical Implementation
 
-
-Video demo link:
-https://www.bilibili.com/video/BV1msugzJEdT/?vd_source=c096d37a6e7624ca39a2afef5c3f64d2
-
-LegoGame - Multiplayer FPS Game Technical Implementation
 A multiplayer online FPS game developed with Unreal Engine C++, featuring intelligent AI, EQS environmental queries, network synchronization, and faction warfare systems.
-Core Technical Architecture
-1. AI Perception and Behavior System
-AI Perception Mechanism: Visual Perception
+
+**Video Demo:** https://www.bilibili.com/video/BV1msugzJEdT/?vd_source=c096d37a6e7624ca39a2afef5c3f64d2
+
+## Core Technical Architecture
+
+### 1. AI Perception and Behavior System
+
+**AI Perception Mechanism: Visual Perception**
+
+```cpp
 // AI Controller with integrated visual perception component
 ALGAIController::ALGAIController()
 {
@@ -347,20 +444,59 @@ void ALGAIController::OnPossess(APawn* InPawn)
         GetBlackboardComponent()->SetValueAsVector(TEXT("OriginPos"), InPawn->GetActorLocation());
     }
 }
-2. EQS Environmental Query System
-Fire Position Query Weight Design
-•	Line of Sight Test: Weight x10 (Highest priority, ensure target visibility)
-•	Distance to Querier: Weight x3 (Maintain optimal engagement distance)
-•	Distance to Target: Weight x2 (Flexible attack range)
-Cover Position Query Weight Design
-•	Line of Sight Test: Highest weight (Points invisible to target score higher)
-•	Distance to Querier: High weight (Prefer points close to AI)
-•	Distance to Target: Low weight (Points farther from target preferred)
-EQS Height Offset Parameters
-•	ItemHeightOffset: Sample point vertical offset (simulates eye level height)
-•	Context Height Offset: Target object vertical offset (simulates target center)
-3. Weapon System and Reload Mechanisms
-AI Reload Logic
+```
+
+### 2. EQS Environmental Query System
+
+**EQS_HidePos (Cover Position Query)**
+
+SimpleGrid Generator: Generate candidate points in 1500x1500 unit grid around target with 200 unit spacing
+
+Scoring Mechanism and Weight Configuration:
+- **Distance to EnvQueryC_Target (Distance to Player)** - Weight x1
+  - Linear scoring: Close to player=0 points, Far from player=1 point
+  - Goal: Select points far from player (return 1-point locations)
+- **Distance to Querier (Distance to AI)** - Weight x2
+  - Inverse Linear scoring: Far from AI=0 points, Close to AI=1 point
+  - Goal: Select points close to AI (return 1-point locations)
+- **Trace to EnvQueryC_Target on Visibility (Line of Sight Test)** - Weight x1
+  - ItemHeightOffset: +80 (Sample point upward offset 80 units)
+  - ContextHeightOffset: +40 (AI center point upward offset 40 units, simulating eye position)
+  - Ray casting: From sample point+80 height → toward AI+40 height
+  - Cannot see AI=1 point, Can see AI=0 points
+  - Goal: Select points where player cannot see AI, suitable as cover (return 1-point locations)
+
+Weight Analysis: Distance to Querier has highest weight (x2), indicating this EQS prioritizes points close to AI, ensuring AI can quickly reach cover positions.
+
+Return Logic: System selects points with highest weighted total score, i.e., optimal cover positions that are: far from player, close to AI, and where AI cannot be seen.
+
+**EQS_FindFirePos (Fire Position Query)**
+
+SimpleGrid Generator: Generate candidate points in 1500x1500 unit grid around target with 200 unit spacing
+
+Scoring Mechanism and Weight Configuration:
+- **Distance to Querier (Distance to AI)** - Weight x3
+  - Inverse Linear scoring: Far from AI=0 points, Close to AI=1 point
+  - Goal: Select points close to AI (return 1-point locations)
+- **Distance to EnvQueryC_Target (Distance to Player)** - Weight x2
+  - Linear scoring: Close to player=0 points, Far from player=1 point
+  - Goal: Select points far from player (return 1-point locations)
+- **Trace to EnvQueryC_Target on Visibility (Line of Sight Test)** - Weight x10
+  - ItemHeightOffset: +90 (Sample point upward offset 90 units)
+  - ContextHeightOffset: +60 (Target center point upward offset 60 units)
+  - Ray casting: From sample point+90 height → toward target+60 height
+  - Boolean match unchecked: Can see target=1 point, Cannot see target=0 points
+  - Goal: Select points that can see player target, suitable for firing (return 1-point locations)
+
+Weight Analysis: Trace Visibility has highest weight (x10), indicating this EQS prioritizes clear line-of-sight firing positions, ensuring AI can effectively attack targets.
+
+Return Logic: System selects points with highest weighted total score, i.e., optimal firing positions that are: close to AI, far from player, and with clear sight of target.
+
+### 3. Weapon System and Reload Mechanisms
+
+**AI Reload Logic**
+
+```cpp
 // PawnAction system implementation for AI reload
 class UPawnAction_Reload : public UPawnAction
 {
@@ -386,7 +522,11 @@ class UPawnAction_Reload : public UPawnAction
         Finish(EPawnActionResult::Success);
     }
 };
-Player Reload Logic
+```
+
+**Player Reload Logic**
+
+```cpp
 // Weapon state machine controlling reload process
 enum class EWeaponState : uint8
 {
@@ -411,8 +551,13 @@ float AWeaponActor::ReloadWeapon()
     }
     return 0;
 }
-4. Network RPC Synchronization
-Server RPCs - Authoritative Operations
+```
+
+### 4. Network RPC Synchronization
+
+**Server RPCs - Authoritative Operations**
+
+```cpp
 // Fire control RPC
 UFUNCTION(Server, Reliable, WithValidation)
 void Server_StartFire();
@@ -441,7 +586,11 @@ void ALGCharacterBase::StartSprint()
         Server_ChangeSprint(true);
     }
 }
-Multicast RPCs - Visual Effect Synchronization
+```
+
+**Multicast RPCs - Visual Effect Synchronization**
+
+```cpp
 // Reload animation synchronized to all clients
 UFUNCTION(NetMulticast, Reliable)
 void NetMulti_PlayReloadAnim();
@@ -450,7 +599,11 @@ void AWeaponActor::NetMulti_PlayReloadAnim_Implementation()
 {
     MyMaster->PlayAnimMontage(ReloadMontage);
 }
-Network Variable Replication
+```
+
+**Network Variable Replication**
+
+```cpp
 // Critical data network synchronization
 void AWeaponActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
@@ -468,8 +621,13 @@ void AWeaponActor::OnRep_CurrentClipVolume()
         SpawnEffect(); // Play firing effects
     }
 }
-5. Faction System Design
-Three-Faction Relationship Definition
+```
+
+### 5. Faction System Design
+
+**Three-Faction Relationship Definition**
+
+```cpp
 // Global faction ID constants
 const FGenericTeamId TeamID_Red(1);
 const FGenericTeamId TeamID_Blue(2);
@@ -483,7 +641,11 @@ enum class ETeamColor
     ETC_Blue,    // Blue faction
     ETC_Yellow   // Yellow faction (Neutral)
 };
-Faction Relationship Solver
+```
+
+**Faction Relationship Solver**
+
+```cpp
 // Set faction rules in GameMode
 void ALGGameMode::BeginPlay()
 {
@@ -501,7 +663,11 @@ void ALGGameMode::BeginPlay()
         return A != B ? ETeamAttitude::Hostile : ETeamAttitude::Friendly;
     });
 }
-AI Faction Determination Logic
+```
+
+**AI Faction Determination Logic**
+
+```cpp
 // AI Controller implements faction interface
 ETeamAttitude::Type ALGAIController::GetTeamAttitudeTowards(const AActor& Other) const
 {
@@ -526,8 +692,13 @@ FGenericTeamId ALGAIController::GetGenericTeamId() const
         default: return TeamID_Red;
     }
 }
-6. Precision Shooting System
-Player Precise Aiming
+```
+
+### 6. Precision Shooting System
+
+**Player Precise Aiming**
+
+```cpp
 void AWeaponActor::GetFirePostAndDirection(FVector& Position, FVector& Direction)
 {
     Position = SkeletalMeshComponent->GetSocketLocation(TEXT("MuzzleSocket"));
@@ -560,8 +731,13 @@ void AWeaponActor::GetFirePostAndDirection(FVector& Position, FVector& Direction
         }
     }
 }
-7. Death and Spectator System
-Death Handling and Spectator Mode
+```
+
+### 7. Death and Spectator System
+
+**Death Handling and Spectator Mode**
+
+```cpp
 float ALGCharacterBase::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
     CurrentHP--;
@@ -602,8 +778,13 @@ void ALGCharacterBase::Multi_Dead_Implementation(FVector Impulse, FName BoneName
     GetMesh()->AddImpulse(Impulse * 2000, BoneName, true);
     GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 }
-8. Event Broadcasting System
-Equipment System Event Notifications
+```
+
+### 8. Event Broadcasting System
+
+**Equipment System Event Notifications**
+
+```cpp
 // Trigger events when equipping weapons
 bool UPackageComponent::EquipWeaponByPropsID(int32 ID)
 {
@@ -633,12 +814,14 @@ void UPackageComponent::OnRep_HoldWeapon()
         }
     }
 }
-Technical Highlights Summary
-1.	Modular AI Architecture: Complete AI solution combining Behavior Trees + EQS + PawnAction systems
-2.	Robust Network Synchronization: Server RPC authority validation + Multicast visual sync + Critical variable replication
-3.	Flexible Faction System: Lambda solver + Interface polymorphism + Extensible design
-4.	Precision Shooting Mechanics: Player screen-center detection + AI intelligent aiming + Network latency compensation
-5.	Event-Driven Architecture: Broadcast delegates + Observer pattern + Loosely coupled component communication
+```
+
+## Technical Highlights Summary
+
+1. **Modular AI Architecture**: Complete AI solution combining Behavior Trees + EQS + PawnAction systems
+2. **Robust Network Synchronization**: Server RPC authority validation + Multicast visual sync + Critical variable replication
+3. **Flexible Faction System**: Lambda solver + Interface polymorphism + Extensible design
+4. **Precision Shooting Mechanics**: Player screen-center detection + AI intelligent aiming + Network latency compensation
+5. **Event-Driven Architecture**: Broadcast delegates + Observer pattern + Loosely coupled component communication
+
 This project demonstrates the core technology stack of modern multiplayer game development, featuring complete implementation from low-level network synchronization to high-level AI decision making.
-
-
